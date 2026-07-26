@@ -1,3 +1,5 @@
+> **AI Daily deployment:** This repository is a personalized bilingual AI briefing built from Horizon. The original Horizon documentation is retained below; upstream attribution and the MIT license remain unchanged. Live site: <https://wzxsph.github.io/ai-daily/>. Deployment and recovery notes: [OPERATIONS.md](OPERATIONS.md).
+
 <div align="center">
 <h1>🌅 Horizon</h1>
 

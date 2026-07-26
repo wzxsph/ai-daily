@@ -1,13 +1,21 @@
-name: Deploy Docs
+name: Deploy AI Daily Site
 
 on:
   push:
     branches: [main]
-    paths: ['docs/**']
+    paths:
+      - "docs/**"
+      - ".github/workflows/deploy-docs.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ai-daily-site-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     env:
