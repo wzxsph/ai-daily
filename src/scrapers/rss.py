@@ -1,5 +1,6 @@
 """RSS feed scraper implementation."""
 
+import asyncio
 import calendar
 import hashlib
 import logging
@@ -16,6 +17,13 @@ from ..extractors import ExtractorRegistry
 from ..models import ContentItem, SourceType, RSSSourceConfig
 
 logger = logging.getLogger(__name__)
+
+RSS_MAX_ATTEMPTS = 3
+RSS_RETRY_DELAYS_SECONDS = (2, 8, 20)
+RSS_HEADERS = {
+    "Accept": "application/atom+xml,application/rss+xml,application/xml,text/xml,*/*",
+    "User-Agent": "Mozilla/5.0 (compatible; AI-Daily/1.0; +https://github.com/wzxsph/ai-daily)",
+}
 
 
 class RSSScraper(BaseScraper):
@@ -70,49 +78,77 @@ class RSSScraper(BaseScraper):
         Returns:
             List[ContentItem]: Feed content items
         """
-        items = []
+        for attempt in range(1, RSS_MAX_ATTEMPTS + 1):
+            try:
+                return await self._fetch_feed_once(source, since)
+            except Exception as exc:
+                if attempt >= RSS_MAX_ATTEMPTS:
+                    logger.warning(
+                        "RSS feed %s failed after %s attempts: %s",
+                        source.name,
+                        RSS_MAX_ATTEMPTS,
+                        exc,
+                    )
+                    return []
 
-        try:
-            # Expand environment variables in URL (e.g. ${LWN_TOKEN})
-            feed_url = re.sub(
-                r"\$\{(\w+)\}",
-                lambda m: os.environ.get(m.group(1), m.group(0)).strip(),
-                str(source.url),
-            )
+                delay = RSS_RETRY_DELAYS_SECONDS[attempt - 1]
+                logger.warning(
+                    "RSS feed %s attempt %s/%s failed: %s; retrying in %ss",
+                    source.name,
+                    attempt,
+                    RSS_MAX_ATTEMPTS,
+                    exc,
+                    delay,
+                )
+                await asyncio.sleep(delay)
 
-            # Fetch feed content
-            response = await self.client.get(feed_url, follow_redirects=True)
-            response.raise_for_status()
+        return []
 
-            # Parse feed
-            feed = feedparser.parse(response.text)
+    async def _fetch_feed_once(
+        self, source: RSSSourceConfig, since: datetime
+    ) -> List[ContentItem]:
+        """Fetch and parse one RSS source once; retry policy lives upstream."""
+        items: List[ContentItem] = []
 
-            for entry in feed.entries:
-                # Parse published date
-                published_at = self._parse_date(entry)
-                if not published_at or published_at < since:
-                    continue
+        feed_url = re.sub(
+            r"\$\{(\w+)\}",
+            lambda m: os.environ.get(m.group(1), m.group(0)).strip(),
+            str(source.url),
+        )
+        response = await self.client.get(
+            feed_url,
+            follow_redirects=True,
+            headers=RSS_HEADERS,
+        )
+        response.raise_for_status()
 
-                # Generate unique ID from feed URL and entry ID
-                feed_id = str(source.url).split("//")[1].replace("/", "_")
-                entry_id = entry.get("id", entry.get("link", ""))
-                entry_hash = hashlib.sha256(str(entry_id).encode("utf-8")).hexdigest()[
-                    :16
-                ]
+        feed = feedparser.parse(response.text)
+        if getattr(feed, "bozo", False) and not feed.entries:
+            raise ValueError(f"invalid RSS/Atom payload: {feed.get('bozo_exception')}")
 
-                # Extract content
-                content = self._extract_content(entry)
+        for entry in feed.entries:
+            published_at = self._parse_date(entry)
+            if not published_at or published_at < since:
+                continue
 
-                if source.content_extractor and self._extractors:
-                    extractor = self._extractors.get(source.content_extractor)
-                    if extractor:
-                        url = entry.get("link", "")
-                        if url:
-                            full = await extractor.extract(url, self.client)
-                            if full:
-                                content = full
+            feed_id = str(source.url).split("//")[1].replace("/", "_")
+            entry_id = entry.get("id", entry.get("link", ""))
+            entry_hash = hashlib.sha256(str(entry_id).encode("utf-8")).hexdigest()[
+                :16
+            ]
+            content = self._extract_content(entry)
 
-                item = ContentItem(
+            if source.content_extractor and self._extractors:
+                extractor = self._extractors.get(source.content_extractor)
+                if extractor:
+                    url = entry.get("link", "")
+                    if url:
+                        full = await extractor.extract(url, self.client)
+                        if full:
+                            content = full
+
+            items.append(
+                ContentItem(
                     id=self._generate_id("rss", feed_id, entry_hash),
                     source_type=SourceType.RSS,
                     title=entry.get("title", "Untitled"),
@@ -126,12 +162,10 @@ class RSSScraper(BaseScraper):
                         "tags": [tag.term for tag in entry.get("tags", [])],
                     },
                 )
-                items.append(item)
+            )
 
-        except httpx.HTTPError as e:
-            logger.warning("Error fetching RSS feed %s: %s", source.name, e)
-        except Exception as e:
-            logger.warning("Error parsing RSS feed %s: %s", source.name, e)
+            if source.max_items is not None and len(items) >= source.max_items:
+                break
 
         return items
 

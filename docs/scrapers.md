@@ -88,11 +88,13 @@ Fetches any Atom/RSS feed using the `feedparser` library. Tries multiple date fi
   "url": "https://simonwillison.net/atom/everything/",
   "enabled": true,
   "category": "ai-tools",
+  "max_items": 10,
   "content_extractor": "trafilatura"
 }
 ```
 
 - `category` — optional tag for grouping (e.g., `"programming"`, `"microblog"`)
+- `max_items` — optional positive per-feed candidate cap, applied after the publication-time filter
 - `content_extractor` — optional name of an extractor defined in `extractors` config; when set, the full article text replaces the feed-provided excerpt (see [Extractors](extractors.md))
 
 **Extracted data**: title, URL, author, content (from `summary`/`description`/`content` fields, or full article text if an extractor is configured), feed name, category, and entry tags.

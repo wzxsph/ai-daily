@@ -1,3 +1,5 @@
+> **AI Daily 部署版：** 本仓库是在 Horizon 基础上定制的中英双语 AI 每日简报。下方保留 Horizon 原始文档、上游署名和 MIT License。站点：<https://wzxsph.github.io/ai-daily/>。部署与恢复说明见 [OPERATIONS.md](OPERATIONS.md)。
+
 <div align="center">
 
 <h1>🌅 Horizon</h1>

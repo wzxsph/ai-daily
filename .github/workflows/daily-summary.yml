@@ -1,21 +1,50 @@
-name: Daily Horizon Summary
+name: AI Daily Briefing
 
 on:
   schedule:
-    # GitHub scheduled workflows use UTC. 20:00 UTC is 04:00 Asia/Shanghai;
-    # this intentionally runs early to offset the observed schedule delay.
-    - cron: '0 23 * * *'
-  workflow_dispatch:      # Allow manual trigger
+    # 23:30 UTC = 07:30 Asia/Shanghai on the following calendar day.
+    - cron: "30 23 * * *"
+  workflow_dispatch:
+    inputs:
+      lookback_hours:
+        description: Candidate collection window in hours
+        required: true
+        default: 48
+        type: number
+      send_email:
+        description: Send the merged Chinese and English email after Pages deploys
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: ai-daily-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   daily-summary:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
-      contents: write  # Needed to commit changes
+      contents: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      HORIZON_TIMEZONE: Asia/Shanghai
+      PAGES_URL: https://wzxsph.github.io/ai-daily/
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+
+      - name: Set run context
+        shell: bash
+        run: |
+          echo "RUN_DATE=$(TZ=Asia/Shanghai date +'%Y-%m-%d')" >> "$GITHUB_ENV"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "LOOKBACK_HOURS=${{ inputs.lookback_hours }}" >> "$GITHUB_ENV"
+          else
+            echo "LOOKBACK_HOURS=24" >> "$GITHUB_ENV"
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -28,32 +57,88 @@ jobs:
           version: "0.11.26"
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --frozen
 
-      - name: Prepare GitHub Actions config
+      - name: Prepare production config
         run: cp data/config.github.json data/config.json
 
-      - name: Run Horizon
+      - name: Verify MiniMax secret is configured
         env:
-          # Map secrets to environment variables expected by config.json
-          # Modify these based on your data/config.github.json provider settings
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          LWN_KEY: ${{ secrets.LWN_KEY }}
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          HORIZON_WEBHOOK_URL: ${{ secrets.HORIZON_WEBHOOK_URL }}
-        run: uv run horizon --hours 24
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+        shell: bash
+        run: |
+          if [[ -z "$MINIMAX_API_KEY" ]]; then
+            echo "::error::MINIMAX_API_KEY is not configured"
+            exit 1
+          fi
 
-      - name: Set current date as environment variable
-        run: echo "DATE=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+      - name: Generate and validate bilingual briefing
+        env:
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          uv run python scripts/run_daily_with_retry.py
+          --hours "$LOOKBACK_HOURS"
+          --date "$RUN_DATE"
+          --attempts 2
+          --retry-delay 120
 
       - name: Deploy to GitHub Pages
+        id: deploy_primary
+        continue-on-error: true
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./docs
-          keep_files: true  # Keep existing summaries on gh-pages branch
-          commit_message: "📝 Daily Summary: ${{ env.DATE }}"
+          keep_files: true
+          commit_message: "AI Daily: ${{ env.RUN_DATE }}"
           publish_branch: gh-pages
           enable_jekyll: true
+
+      - name: Wait before Pages retry
+        if: steps.deploy_primary.outcome == 'failure'
+        run: sleep 30
+
+      - name: Retry GitHub Pages deployment
+        id: deploy_retry
+        if: steps.deploy_primary.outcome == 'failure'
+        continue-on-error: true
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs
+          keep_files: true
+          commit_message: "AI Daily retry: ${{ env.RUN_DATE }}"
+          publish_branch: gh-pages
+          enable_jekyll: true
+
+      - name: Require a successful Pages deployment
+        if: always()
+        shell: bash
+        run: |
+          if [[ "${{ steps.deploy_primary.outcome }}" != "success" && "${{ steps.deploy_retry.outcome }}" != "success" ]]; then
+            echo "::error::Both GitHub Pages deployment attempts failed or were skipped"
+            exit 1
+          fi
+
+      - name: Send one bilingual Gmail message
+        if: success() && (github.event_name == 'schedule' || inputs.send_email == true)
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: >-
+          uv run python scripts/send_daily_email.py
+          --date "$RUN_DATE"
+          --pages-url "$PAGES_URL"
+
+      - name: Attempt final failure email
+        if: failure()
+        continue-on-error: true
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: >-
+          python scripts/send_daily_email.py
+          --failure
+          --date "${RUN_DATE:-unknown}"
+          --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

@@ -274,12 +274,15 @@ All sources are configured under the top-level `sources` key in `config.json`.
         "name": "Blog Name",
         "url": "https://example.com/feed.xml",
         "enabled": true,
-        "category": "ai-ml"
+        "category": "ai-ml",
+        "max_items": 10
       }
     ]
   }
 }
 ```
+
+`max_items` is optional and limits the number of eligible candidates retained from that individual feed after the time-window filter. It must be a positive integer.
 
 ### Reddit
 
