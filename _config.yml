@@ -1,0 +1,23 @@
+theme: jekyll-theme-cayman
+title: AI Daily
+description: 每日中英双语 AI 前沿、开发工具、研究与 GitHub 趋势简报
+baseurl: "/ai-daily"
+url: "https://wzxsph.github.io"
+
+# Build settings
+markdown: kramdown
+future: true # Allow future posts to be published
+plugins:
+  - jekyll-feed
+feed:
+  path: feed.xml
+exclude:
+  - ".github"
+  - "node_modules"
+
+defaults:
+  - scope:
+      path: ""
+      type: "posts"
+    values:
+      layout: "default"
